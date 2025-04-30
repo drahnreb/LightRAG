@@ -7,7 +7,7 @@ from typing import Any, final, Tuple
 import pipmaster as pm
 
 if not pm.is_installed("google-cloud-spanner"):
-    pm.install("google-cloud-spanner>=3.53.0")  # Updated version
+    pm.install("google-cloud-spanner>=3.53.0")
 if not pm.is_installed("opentelemetry-api"):
     pm.install("opentelemetry-api>=1.0.0")
 if not pm.is_installed("opentelemetry-sdk"):
@@ -23,8 +23,6 @@ if not pm.is_installed("opentelemetry-instrumentation-grpc"):
 try:
     from google.cloud import spanner_v1
     from google.cloud.spanner_v1.database import DatabaseAsync
-
-    # Removed unused import: SessionCheckoutContextManager
     from google.cloud.spanner_v1.pool import TransactionPingingPool
     from google.api_core import exceptions as google_exceptions
 
