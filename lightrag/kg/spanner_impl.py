@@ -52,10 +52,9 @@ from tenacity import (
     retry_if_exception,
 )
 
-# LightRAG base classes (assuming they are available in the environment)
 from ..base import BaseGraphStorage
 from ..types import KnowledgeGraph, KnowledgeGraphNode, KnowledgeGraphEdge
-from ..utils import logger  # Assuming logger is configured elsewhere
+from ..utils import logger
 
 
 import configparser

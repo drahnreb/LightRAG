@@ -14,7 +14,7 @@ STORAGE_IMPLEMENTATIONS = {
             "NetworkXStorage",
             "Neo4JStorage",
             "PGGraphStorage",
-            "SpannerStorage",
+            "SpannerGraphStorage",
             # "AGEStorage",
             # "MongoGraphStorage",
             # "TiDBGraphStorage",
@@ -64,7 +64,7 @@ STORAGE_ENV_REQUIREMENTS: dict[str, list[str]] = {
         "AGE_POSTGRES_PASSWORD",
     ],
     # "GremlinStorage": ["GREMLIN_HOST", "GREMLIN_PORT", "GREMLIN_GRAPH"],
-    "SpannerStorage": [
+    "SpannerGraphStorage": [
         "SPANNER_PROJECT_ID",
         "SPANNER_INSTANCE_ID",
         "SPANNER_DATABASE_ID",
@@ -109,7 +109,7 @@ STORAGES = {
     "PGKVStorage": ".kg.postgres_impl",
     "PGVectorStorage": ".kg.postgres_impl",
     "AGEStorage": ".kg.age_impl",
-    "SpannerStorage": ".kg.spanner_impl",
+    "SpannerGraphStorage": ".kg.spanner_impl",
     "PGGraphStorage": ".kg.postgres_impl",
     # "GremlinStorage": ".kg.gremlin_impl",
     "PGDocStatusStorage": ".kg.postgres_impl",
