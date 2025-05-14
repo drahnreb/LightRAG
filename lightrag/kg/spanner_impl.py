@@ -22,7 +22,7 @@ if not pm.is_installed("opentelemetry-instrumentation-grpc"):
 
 try:
     from google.cloud import spanner_v1
-    from google.cloud.spanner_v1.database import DatabaseAsync
+    from google.cloud.spanner_v1.database import Database
     from google.cloud.spanner_v1.pool import TransactionPingingPool
     from google.api_core import exceptions as google_exceptions
 
@@ -30,7 +30,7 @@ try:
     from opentelemetry import trace
     from opentelemetry.sdk.trace import TracerProvider
     from opentelemetry.sdk.trace.export import BatchSpanProcessor
-    from opentelemetry.exporter.gcp_trace import CloudTraceSpanExporter
+    from opentelemetry.exporter.cloud_trace import CloudTraceSpanExporter
     from opentelemetry.sdk.trace.sampling import ALWAYS_ON
     from opentelemetry.trace import Status, StatusCode
 
@@ -134,7 +134,7 @@ class SpannerClientManager:
     @classmethod
     async def get_client(
         cls,
-    ) -> Tuple[DatabaseAsync, TransactionPingingPool, trace.Tracer]:
+    ) -> Tuple[Database, TransactionPingingPool, trace.Tracer]:
         """Gets or creates the singleton Spanner Database, Session Pool, and Tracer."""
         async with cls._lock:
             if (
@@ -228,7 +228,7 @@ class SpannerClientManager:
 
     @classmethod
     async def release_client(
-        cls, db: DatabaseAsync, pool: TransactionPingingPool, tracer: trace.Tracer
+        cls, db: Database, pool: TransactionPingingPool, tracer: trace.Tracer
     ):
         """Decrements reference count and closes pool/tracer if count reaches zero."""
         async with cls._lock:
@@ -319,7 +319,7 @@ class SpannerGraphStorage(BaseGraphStorage):
     stores properties as JSON. Includes OpenTelemetry tracing.
     """
 
-    _db: DatabaseAsync | None = field(default=None, init=False, repr=False)
+    _db: Database | None = field(default=None, init=False, repr=False)
     _pool: TransactionPingingPool | None = field(default=None, init=False, repr=False)
     _tracer: trace.Tracer | None = field(
         default=None, init=False, repr=False
@@ -474,7 +474,7 @@ class SpannerGraphStorage(BaseGraphStorage):
 
     # --- Helper Methods ---
 
-    def _get_db(self) -> DatabaseAsync:
+    def _get_db(self) -> Database:
         """Ensures the database object is available."""
         if not self._db:
             raise RuntimeError(
