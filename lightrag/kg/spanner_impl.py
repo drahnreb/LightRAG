@@ -1,7 +1,7 @@
 import asyncio
 import os
 from dataclasses import dataclass, field
-from typing import Any, final, Tuple
+from typing import Any, final, Tuple, Set, Dict
 
 # Ensure google-cloud-spanner and opentelemetry packages are installed
 import pipmaster as pm
@@ -332,33 +332,62 @@ class SpannerGraphStorage(BaseGraphStorage):
     _edge_target_col: str = field(default="targetId", init=False)
 
     def __post_init__(self):
-        logger.info(f"SpannerGraphStorage initialized for namespace: {self.namespace}")
+        super().__post_init__()  # Call super if BaseGraphStorage.__post_init__ exists
+        # Define table names, possibly using namespace
+        # For simplicity, using fixed names here, but namespace could be prefixed
+        self._node_table = (
+            f"GraphNodes_{self.namespace}" if self.namespace else "GraphNodes"
+        )
+        self._edge_table = (
+            f"GraphEdges_{self.namespace}" if self.namespace else "GraphEdges"
+        )
+        logger.info(
+            f"SpannerGraphStorage instance for namespace '{self.namespace}' created. Tables: {self._node_table}, {self._edge_table}"
+        )
 
     async def initialize(self):
         """Initializes the Spanner connection, pool, tracer and ensures schema exists."""
-        if self._db is None or self._pool is None or self._tracer is None:
-            logger.info("SpannerGraphStorage initializing client and tracer...")
-            self._db, self._pool, self._tracer = await SpannerClientManager.get_client()
-            if not SpannerClientManager.is_db_checked():
-                await self._ensure_schema()
-                SpannerClientManager.set_db_checked(True)
+        if not (self._db and self._pool and self._tracer):
+            logger.info(
+                f"SpannerGraphStorage ({self.namespace}) initializing client..."
+            )
+            try:
+                (
+                    self._db,
+                    self._pool,
+                    self._tracer,
+                ) = await SpannerClientManager.get_client()
+                if (
+                    not await SpannerClientManager.is_db_checked()
+                ):  # Made is_db_checked async
+                    await self._ensure_schema()
+                    await SpannerClientManager.set_db_checked(True)
+                logger.info(
+                    f"SpannerGraphStorage ({self.namespace}) client initialized."
+                )
+            except Exception as e:
+                logger.error(
+                    f"SpannerGraphStorage ({self.namespace}) init failed: {e}",
+                    exc_info=True,
+                )
+                self._db = self._pool = self._tracer = None  # Ensure clean state
+                raise
         else:
-            logger.info("SpannerGraphStorage client and tracer already initialized.")
+            logger.info(f"SpannerGraphStorage ({self.namespace}) already initialized.")
 
     async def finalize(self):
         """Releases the Spanner connection pool and tracer."""
-        if self._db is not None and self._pool is not None and self._tracer is not None:
-            logger.info("SpannerGraphStorage finalizing client and tracer...")
-            # Pass all managed instances to release_client
+        if self._db and self._pool and self._tracer:
+            logger.info(f"SpannerGraphStorage ({self.namespace}) finalizing client...")
             await SpannerClientManager.release_client(
                 self._db, self._pool, self._tracer
             )
-            self._db = None
-            self._pool = None
-            self._tracer = None  # Clear tracer reference
-            logger.info("SpannerGraphStorage finalized.")
+            self._db = self._pool = self._tracer = None
+            logger.info(f"SpannerGraphStorage ({self.namespace}) finalized.")
         else:
-            logger.info("SpannerGraphStorage already finalized or not initialized.")
+            logger.info(
+                f"SpannerGraphStorage ({self.namespace}) already finalized or not initialized."
+            )
 
     async def _ensure_schema(self):
         """Creates the necessary Spanner tables and indexes if they don't exist."""
@@ -671,7 +700,45 @@ class SpannerGraphStorage(BaseGraphStorage):
                 )
                 raise
 
-    # edge_degree uses node_degree, so tracing is implicitly handled there
+    @retry(
+        stop=stop_after_attempt(3),
+        wait=wait_exponential(multiplier=1, min=1, max=5),
+        retry=retry_if_exception(_is_spanner_aborted),
+        reraise=True,
+    )
+    async def edge_degree(self, src_id: str, tgt_id: str) -> int:
+        """Calculates edge degree as sum of source and target node degrees."""
+        tracer = self._get_tracer()
+        async with tracer.start_as_current_span("edge_degree") as span:
+            span.set_attribute("db.system", "spanner")
+            span.set_attribute("db.spanner.source_node_id", src_id)
+            span.set_attribute("db.spanner.target_node_id", tgt_id)
+            try:
+                # Get degrees of source and target nodes concurrently
+                src_degree_task = self.node_degree(src_id)
+                tgt_degree_task = self.node_degree(tgt_id)
+                src_node_degree, tgt_node_degree = await asyncio.gather(
+                    src_degree_task, tgt_degree_task
+                )
+
+                total_degree = src_node_degree + tgt_node_degree
+                span.set_attribute("db.spanner.edge_degree", total_degree)
+                span.set_status(Status(StatusCode.OK))
+                return total_degree
+            except Exception as e:
+                span.set_status(Status(StatusCode.ERROR, str(e)))
+                span.record_exception(e)
+                if not _is_spanner_aborted(e):
+                    logger.warning(
+                        f"Error getting edge degree for '{src_id}'->'{tgt_id}', returning 0: {e}",
+                        exc_info=False,
+                    )
+                    return 0
+                logger.error(
+                    f"Error getting node degree for '{src_id}'->'{tgt_id}': {e}",
+                    exc_info=True,
+                )
+                raise  # Reraise the exception
 
     @retry(
         stop=stop_after_attempt(3),
@@ -1137,7 +1204,48 @@ class SpannerGraphStorage(BaseGraphStorage):
                 logger.error(f"Error getting node degrees batch: {e}", exc_info=True)
                 raise
 
-    # edge_degrees_batch uses node_degrees_batch, tracing handled there
+    async def edge_degrees_batch(
+        self, edge_pairs: list[tuple[str, str]]
+    ) -> dict[tuple[str, str], int]:
+        tracer = self._get_tracer()
+        async with tracer.start_as_current_span("edge_degrees_batch") as span:
+            span.set_attribute("db.system", "spanner")
+            span.set_attribute("db.spanner.edge_pair_count", len(edge_pairs))
+            if not edge_pairs:
+                span.set_status(Status(StatusCode.OK))
+                return {}
+
+            try:
+                # Collect all unique node IDs involved in the edge pairs
+                node_ids_set: Set[str] = set()
+                for src_id, tgt_id in edge_pairs:
+                    node_ids_set.add(src_id)
+                    node_ids_set.add(tgt_id)
+
+                unique_node_ids = list(node_ids_set)
+
+                # Get degrees for all unique nodes in a single batch call
+                node_degrees_map = await self.node_degrees_batch(
+                    unique_node_ids
+                )  # This is already traced
+
+                # Calculate edge degrees
+                edge_degrees_result: Dict[Tuple[str, str], int] = {}
+                for src_id, tgt_id in edge_pairs:
+                    src_degree = node_degrees_map.get(src_id, 0)
+                    tgt_degree = node_degrees_map.get(tgt_id, 0)
+                    edge_degrees_result[(src_id, tgt_id)] = src_degree + tgt_degree
+
+                span.set_attribute(
+                    "db.spanner.calculated_edge_degree_count", len(edge_degrees_result)
+                )
+                span.set_status(Status(StatusCode.OK))
+                return edge_degrees_result
+            except Exception as e:
+                span.set_status(Status(StatusCode.ERROR, str(e)))
+                span.record_exception(e)
+                logger.error(f"Error getting edge degrees batch: {e}", exc_info=True)
+                raise
 
     async def get_edges_batch(
         self, pairs: list[dict[str, str]]
